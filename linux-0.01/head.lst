@@ -1,0 +1,395 @@
+GAS LISTING head.s 			page 1
+
+
+   1              	#  head.s contains the 32-bit startup code.
+   2              	#  Two L3 task multitasking. The code of tasks are in kernel area, 
+   3              	#  The kernel code has moved from 0x10000 to 0
+   4              	SCRN_SEL	= 0x18
+   5              	TSS0_SEL	= 0x20
+   6              	LDT0_SEL	= 0x28
+   7              	TSS1_SEL	= 0X30
+   8              	LDT1_SEL	= 0x38
+   9              	.global startup_32
+  10              	.text
+  11              	startup_32:
+  12 0000 B8100000 		movl $0x10,%eax
+  12      00
+  13 0005 8ED8     		mov %ax,%ds
+  14 0007 0FB225D0 		lss init_stack,%esp
+  14      0B0000
+  15              	
+  16              	# setup base fields of descriptors.
+  17 000e E8A20000 		call setup_idt
+  17      00
+  18 0013 E8950000 		call setup_gdt
+  18      00
+  19 0018 B8100000 		movl $0x10,%eax				# reload all the segment registers
+  19      00
+  20 001d 8ED8     		mov %ax,%ds				# after changing gdt. 
+  21 001f 8EC0     		mov %ax,%es
+  22 0021 8EE0     		mov %ax,%fs
+  23 0023 8EE8     		mov %ax,%gs
+  24 0025 0FB225D0 		lss init_stack,%esp
+  24      0B0000
+  25              	
+  26              	# setup up timer 8253 chip.
+  27 002c B036     		movb $0x36, %al
+  28 002e BA430000 		movl $0x43, %edx
+  28      00
+  29 0033 EE       		outb %al, %dx
+  30 0034 B89A2E00 		movl $11930, %eax        		# timer frequency 100 HZ 
+  30      00
+  31 0039 BA400000 		movl $0x40, %edx
+  31      00
+  32 003e EE       		outb %al, %dx
+  33 003f 88E0     		movb %ah, %al
+  34 0041 EE       		outb %al, %dx
+  35              	
+  36              	# setup timer & system call interrupt descriptors.
+  37 0042 B8000008 		movl $0x00080000, %eax			# eax 高字为0x0008, 内核代码段选择子	
+  37      00
+  38 0047 66B82A01 		movw $timer_interrupt, %ax		# 地址低16位
+  39 004b 66BA008E 		movw $0x8E00, %dx			#edx 高16位为0,表示地址偏移高16为0, 门类型14(中断门),8->存�
+  40 004f B9080000 		movl $0x08, %ecx              		# The PC default timer int.
+  40      00
+  41 0054 8D34CD90 		lea idt(,%ecx,8), %esi			# 时钟是8号中断源.
+  41      010000
+  42 005b 8906     		movl %eax,(%esi) 
+  43 005d 895604   		movl %edx,4(%esi)
+  44 0060 66B86601 		movw $system_interrupt, %ax		# 选择子仍然是0x0008
+  45 0064 66BA00EF 		movw $0xef00, %dx			# 门类型15(陷阱门), e->存在，特权级3
+GAS LISTING head.s 			page 2
+
+
+  46 0068 B9800000 		movl $0x80, %ecx			# 系统中断是0x80号中断源
+  46      00
+  47 006d 8D34CD90 		lea idt(,%ecx,8), %esi
+  47      010000
+  48 0074 8906     		movl %eax,(%esi) 
+  49 0076 895604   		movl %edx,4(%esi)
+  50              	
+  51              	# unmask the timer interrupt.
+  52              	#	movl $0x21, %edx
+  53              	#	inb %dx, %al
+  54              	#	andb $0xfe, %al
+  55              	#	outb %al, %dx
+  56              	
+  57              	# Move to user mode (task 0)
+  58 0079 9C       		pushfl
+  59 007a 812424FF 		andl $0xffffbfff, (%esp)
+  59      BFFFFF
+  60 0081 9D       		popfl
+  61 0082 B8200000 		movl $TSS0_SEL, %eax
+  61      00
+  62 0087 0F00D8   		ltr %ax
+  63 008a B8280000 		movl $LDT0_SEL, %eax
+  63      00
+  64 008f 0F00D0   		lldt %ax 
+  65 0092 C7057901 		movl $0, current
+  65      00000000 
+  65      0000
+  66 009c FB       		sti
+  67 009d 6A17     		pushl $0x17				#任务0 数据段选择子
+  68 009f 68D00B00 		pushl $init_stack
+  68      00
+  69 00a4 9C       		pushfl
+  70 00a5 6A0F     		pushl $0x0f				#任务0 代码段选择子
+  71 00a7 68D81000 		pushl $task0
+  71      00
+  72 00ac CF       		iret
+  73              	
+  74              	/****************************************/
+  75              	setup_gdt:
+  76 00ad 0F011588 		lgdt lgdt_opcode
+  76      010000
+  77 00b4 C3       		ret
+  78              	
+  79              	setup_idt:
+  80 00b5 8D151401 		lea ignore_int,%edx			/* 两种写法一样  mov $ignore_int,%edx */
+  80      0000
+  81 00bb B8000008 		movl $0x00080000,%eax
+  81      00
+  82 00c0 6689D0   		movw %dx,%ax				/* selector = 0x0008 = cs */
+  83 00c3 66BA008E 		movw $0x8E00,%dx			/* interrupt gate - dpl=0, present */
+  84 00c7 8D3D9001 		lea idt,%edi
+  84      0000
+  85 00cd B9000100 		mov $256,%ecx
+  85      00
+  86              	rp_sidt:
+  87 00d2 8907     		movl %eax,(%edi)
+  88 00d4 895704   		movl %edx,4(%edi)
+GAS LISTING head.s 			page 3
+
+
+  89 00d7 83C708   		addl $8,%edi
+  90 00da 49       		dec %ecx
+  91 00db 75F5     		jne rp_sidt
+  92 00dd 0F011D82 		lidt lidt_opcode
+  92      010000
+  93 00e4 C3       		ret
+  94              	
+  95              	# -----------------------------------
+  96              	write_char:
+  97 00e5 0FA8     		push %gs
+  98 00e7 53       		pushl %ebx
+  99              	#	pushl %eax
+ 100 00e8 BB180000 		mov $SCRN_SEL, %ebx
+ 100      00
+ 101 00ed 8EEB     		mov %bx, %gs
+ 102 00ef 8B1D7D01 		movl scr_loc, %ebx			# scr_loc 是个内存, 最初设置为0
+ 102      0000
+ 103 00f5 D1E3     		shl $1, %ebx				# 每个位置按word存储，低byte是字符，高byte是属性
+ 104 00f7 658803   		movb %al, %gs:(%ebx)
+ 105 00fa D1EB     		shr $1, %ebx
+ 106 00fc 43       		incl %ebx
+ 107 00fd 81FBD007 		cmpl $2000, %ebx			# 80*25 字符显示
+ 107      0000
+ 108 0103 7205     		jb 1f
+ 109 0105 BB000000 		movl $0, %ebx
+ 109      00
+ 110 010a 891D7D01 	1:	movl %ebx, scr_loc	
+ 110      0000
+ 111              	#	popl %eax
+ 112 0110 5B       		popl %ebx
+ 113 0111 0FA9     		pop %gs
+ 114 0113 C3       		ret
+ 115              	
+ 116              	/***********************************************/
+ 117              	/* This is the default interrupt "handler" :-) */
+ 118              	.align 2
+ 119              	ignore_int:
+ 120 0114 1E       		push %ds
+ 121 0115 50       		pushl %eax
+ 122 0116 B8100000 		movl $0x10, %eax
+ 122      00
+ 123 011b 8ED8     		mov %ax, %ds
+ 124 011d B8430000 		movl $67, %eax            /* print 'C' */
+ 124      00
+ 125 0122 E8BEFFFF 		call write_char
+ 125      FF
+ 126 0127 58       		popl %eax
+ 127 0128 1F       		pop %ds
+ 128 0129 CF       		iret
+ 129              	
+ 130              	/* Timer interrupt handler */ 
+ 131              	.align 2
+ 132              	timer_interrupt:
+ 133 012a 1E       		push %ds
+ 134 012b 50       		pushl %eax
+ 135 012c B8100000 		movl $0x10, %eax
+ 135      00
+GAS LISTING head.s 			page 4
+
+
+ 136 0131 8ED8     		mov %ax, %ds
+ 137 0133 B020     		movb $0x20, %al
+ 138 0135 E620     		outb %al, $0x20
+ 139 0137 B8010000 		movl $1, %eax
+ 139      00
+ 140 013c 39057901 		cmpl %eax, current
+ 140      0000
+ 141 0142 740E     		je 1f
+ 142 0144 A3790100 		movl %eax, current
+ 142      00
+ 143 0149 EA000000 		ljmp $TSS1_SEL, $0
+ 143      003000
+ 144 0150 EB11     		jmp 2f
+ 145 0152 C7057901 	1:	movl $0, current
+ 145      00000000 
+ 145      0000
+ 146 015c EA000000 		ljmp $TSS0_SEL, $0
+ 146      002000
+ 147 0163 58       	2:	popl %eax
+ 148 0164 1F       		pop %ds
+ 149 0165 CF       		iret
+ 150              	
+ 151              	/* system call handler */
+ 152              	.align 2
+ 153              	system_interrupt:
+ 154 0166 1E       		push %ds
+ 155 0167 52       		pushl %edx
+ 156 0168 50       		pushl %eax
+ 157 0169 BA100000 		movl $0x10, %edx
+ 157      00
+ 158 016e 8EDA     		mov %dx, %ds
+ 159 0170 E870FFFF 		call write_char
+ 159      FF
+ 160 0175 58       		popl %eax
+ 161 0176 5A       		popl %edx
+ 162 0177 1F       		pop %ds
+ 163 0178 CF       		iret
+ 164              	
+ 165              	/*********************************************/
+ 166 0179 00000000 	current:.long 0
+ 167 017d 00000000 	scr_loc:.long 0
+ 168              	
+ 169 0181 90       	.align 2
+ 170              	lidt_opcode:
+ 171 0182 FF07     		.word 256*8-1				# idt contains 256 entries
+ 172 0184 90010000 		.long idt				# This will be rewrite by code. 
+ 173              	lgdt_opcode:
+ 174 0188 3F00     		.word (end_gdt-gdt)-1			# so does gdt 
+ 175 018a 90090000 		.long gdt				# This will be rewrite by code.
+ 176              	
+ 177 018e 6690     		.align 8
+ 178 0190 00000000 	idt:	.fill 256,8,0				# idt is uninitialized
+ 178      00000000 
+ 178      00000000 
+ 178      00000000 
+ 178      00000000 
+ 179              	
+GAS LISTING head.s 			page 5
+
+
+ 180 0990 00000000 	gdt:	.quad 0x0000000000000000		/* NULL descriptor */
+ 180      00000000 
+ 181 0998 FF070000 		.quad 0x00c09a00000007ff		/* 8Mb 0x08, base = 0x00000 */
+ 181      009AC000 
+ 182 09a0 FF070000 		.quad 0x00c09200000007ff		/* 8Mb 0x10 */
+ 182      0092C000 
+ 183              	#	.quad 0x00c0 920b 8000 0002		/* 2*4K=8Kb base = 0x0b8000 */
+ 184 09a8 02000080 		.quad 0x00c0920b80000002		/* screen 0x18 - for display */
+ 184      0B92C000 
+ 185              	
+ 186              	#		段限长， 偏移低16, 属性+偏移16-24, 偏移24-32位
+ 187 09b0 6800F00B 		.word 0x0068, tss0, 0xe900, 0x0	# TSS0 descr 0x20
+ 187      00E90000 
+ 188 09b8 4000D80B 		.word 0x0040, ldt0, 0xe200, 0x0	# LDT0 descr 0x28
+ 188      00E20000 
+ 189 09c0 6800700E 		.word 0x0068, tss1, 0xe900, 0x0	# TSS1 descr 0x30
+ 189      00E90000 
+ 190 09c8 4000580E 		.word 0x0040, ldt1, 0xe200, 0x0	# LDT1 descr 0x38
+ 190      00E20000 
+ 191              	end_gdt:
+ 192 09d0 00000000 		.fill 128,4,0
+ 192      00000000 
+ 192      00000000 
+ 192      00000000 
+ 192      00000000 
+ 193              	init_stack:                          		# Will be used as user stack for task0.
+ 194 0bd0 D00B0000 		.long init_stack
+ 195 0bd4 1000     		.word 0x10
+ 196              	
+ 197              	/*************************************/
+ 198 0bd6 6690     	.align 8
+ 199 0bd8 00000000 	ldt0:	.quad 0x0000000000000000
+ 199      00000000 
+ 200 0be0 FF030000 		.quad 0x00c0fa00000003ff		# 0x0f, base = 0x00000
+ 200      00FAC000 
+ 201              	#	.quad 0x00c09a00000003ff		# 0x08, base = 0x00000, 产生异常实验
+ 202 0be8 FF030000 		.quad 0x00c0f200000003ff		# 0x17
+ 202      00F2C000 
+ 203              	
+ 204 0bf0 00000000 	tss0:	.long 0 				/* back link */
+ 205 0bf4 580E0000 		.long krn_stk0, 0x10			/* esp0, ss0 */
+ 205      10000000 
+ 206 0bfc 00000000 		.long 0, 0, 0, 0, 0			/* esp1, ss1, esp2, ss2, cr3 */
+ 206      00000000 
+ 206      00000000 
+ 206      00000000 
+ 206      00000000 
+ 207 0c10 00000000 		.long 0, 0, 0, 0, 0			/* eip, eflags, eax, ecx, edx */
+ 207      00000000 
+ 207      00000000 
+ 207      00000000 
+ 207      00000000 
+ 208 0c24 00000000 		.long 0, 0, 0, 0, 0			/* ebx esp, ebp, esi, edi */
+ 208      00000000 
+ 208      00000000 
+ 208      00000000 
+ 208      00000000 
+GAS LISTING head.s 			page 6
+
+
+ 209 0c38 00000000 		.long 0, 0, 0, 0, 0, 0 			/* es, cs, ss, ds, fs, gs */
+ 209      00000000 
+ 209      00000000 
+ 209      00000000 
+ 209      00000000 
+ 210 0c50 28000000 		.long LDT0_SEL, 0x8000000		/* ldt, trace bitmap */
+ 210      00000008 
+ 211              	
+ 212 0c58 00000000 		.fill 128,4,0
+ 212      00000000 
+ 212      00000000 
+ 212      00000000 
+ 212      00000000 
+ 213              	krn_stk0:
+ 214              	#	.long 0
+ 215              	
+ 216              	/************************************/
+ 217              	.align 8
+ 218 0e58 00000000 	ldt1:	.quad 0x0000000000000000
+ 218      00000000 
+ 219 0e60 FF030000 		.quad 0x00c0fa00000003ff		# 0x0f, base = 0x00000
+ 219      00FAC000 
+ 220 0e68 FF030000 		.quad 0x00c0f200000003ff		# 0x17
+ 220      00F2C000 
+ 221              	
+ 222 0e70 00000000 	tss1:	.long 0 				/* back link */
+ 223 0e74 D8100000 		.long krn_stk1, 0x10			/* esp0, ss0 */
+ 223      10000000 
+ 224 0e7c 00000000 		.long 0, 0, 0, 0, 0			/* esp1, ss1, esp2, ss2, cr3 */
+ 224      00000000 
+ 224      00000000 
+ 224      00000000 
+ 224      00000000 
+ 225 0e90 EC100000 		.long task1, 0x200			/* eip, eflags */
+ 225      00020000 
+ 226 0e98 00000000 		.long 0, 0, 0, 0			/* eax, ecx, edx, ebx */
+ 226      00000000 
+ 226      00000000 
+ 226      00000000 
+ 227 0ea8 00130000 		.long usr_stk1, 0, 0, 0			/* esp, ebp, esi, edi */
+ 227      00000000 
+ 227      00000000 
+ 227      00000000 
+ 228 0eb8 17000000 		.long 0x17,0x0f,0x17,0x17,0x17,0x17 	/* es, cs, ss, ds, fs, gs */
+ 228      0F000000 
+ 228      17000000 
+ 228      17000000 
+ 228      17000000 
+ 229 0ed0 38000000 		.long LDT1_SEL, 0x8000000		/* ldt, trace bitmap */
+ 229      00000008 
+ 230              	
+ 231 0ed8 00000000 		.fill 128,4,0
+ 231      00000000 
+ 231      00000000 
+ 231      00000000 
+ 231      00000000 
+ 232              	krn_stk1:
+GAS LISTING head.s 			page 7
+
+
+ 233              	
+ 234              	/************************************/
+ 235              	task0:
+ 236 10d8 B8170000 		movl $0x17, %eax
+ 236      00
+ 237 10dd 8ED8     		movw %ax, %ds
+ 238 10df B041     		movb $65, %al              		/* print 'A' */
+ 239 10e1 CD80     		int $0x80
+ 240 10e3 B9FF0F00 		movl $0xfff, %ecx
+ 240      00
+ 241 10e8 E2FE     	1:	loop 1b
+ 242 10ea EBEC     		jmp task0 
+ 243              	
+ 244              	task1:
+ 245 10ec B8170000 		movl $0x17, %eax
+ 245      00
+ 246 10f1 8ED8     		movw %ax, %ds
+ 247 10f3 B042     		movb $66, %al              		/* print 'B' */
+ 248 10f5 CD80     		int $0x80
+ 249 10f7 B9FF0F00 		movl $0xfff, %ecx
+ 249      00
+ 250 10fc E2FE     	1:	loop 1b
+ 251 10fe EBEC     		jmp task1
+ 252              	
+ 253              	
+ 254 1100 00000000 		.fill 128,4,0 
+ 254      00000000 
+ 254      00000000 
+ 254      00000000 
+ 254      00000000 
+ 255              	usr_stk1:
+ 256              	/* vim:set fdm=manual: */ 
